@@ -8,13 +8,14 @@ import sys
 from typing import Iterable
 
 from openai import OpenAI
+from pydantic import BaseModel, ConfigDict, create_model
 
 from .assets import read_catalog
 from .classifier import max_tier
 from .memory import TranslationMemory
 from .schema import (
-    CatalogEntry, ClassificationBatch, ReviewBatch, SegmentState, Tier,
-    TranslationBatch,
+    CatalogEntry, ClassificationDecision, ReviewDecision, SegmentState, Tier,
+    TranslationDecision,
 )
 from .validation import contains_glossary_term, locked_glossary_errors, validate_translation
 
@@ -41,7 +42,9 @@ need_more_inspection: short ambiguity, entity/item names, placeholders, tags, or
 high_inspection: mechanics, tutorial/dialogue, nuanced prose, or lore requiring related-key context.
 ultra_inspection: extended narrative, conflicting source context, crucial terminology, or text where
 a subtle error can change mechanics/character voice. Never lower the provided baseline tier.
-Also identify domain, likely speaker, concise context notes, and concrete ambiguities."""
+Also identify domain, likely speaker, concise context notes, and concrete ambiguities.
+Classify every supplied segment exactly once. Each required response field is named after a supplied
+segment_id; put that segment's classification in its matching field."""
 
 REVIEW_PROMPT = """Act as an independent Valheim localization reviewer. Compare every Vietnamese
 candidate against English, related segments, style rules, glossary, and invariants. Reject invented
@@ -93,11 +96,37 @@ def _catalog_map(workspace: Path) -> dict[str, CatalogEntry]:
     return {entry.segment_id: entry for entry in read_catalog(workspace)}
 
 
+def _exact_response_format(name: str, batch: list[SegmentState],
+                           decision: type[BaseModel]) -> type[BaseModel]:
+    """Build a strict response object with one required field per requested ID.
+
+    A list of typed items guarantees each item's shape, but JSON Schema cannot
+    guarantee that every requested semantic ID occurs once. Required object
+    fields make completeness and identity part of the structured-output schema.
+    """
+    return create_model(
+        name,
+        __config__=ConfigDict(extra="forbid"),
+        **{state.segment_id: (decision, ...) for state in batch},
+    )
+
+
+def _classification_response_format(batch: list[SegmentState]) -> type[BaseModel]:
+    return _exact_response_format("ClassificationResponse", batch, ClassificationDecision)
+
+
+def _needs_ai_classification(state: SegmentState) -> bool:
+    classifier = state.context.get("classifier")
+    return state.status == "pending" or classifier in (None, "deterministic")
+
+
 def classify_segments(workspace: Path, use_ai: bool, limit: int | None = None) -> dict[str, int]:
     catalog = _catalog_map(workspace)
     with TranslationMemory(workspace / "memory.sqlite3") as memory:
-        pending = memory.select(("pending", "classified"), limit=limit)
+        pending = memory.select(("pending", "classified"))
         if not use_ai:
+            if limit is not None:
+                pending = pending[:limit]
             for state in pending:
                 entry = catalog[state.segment_id]
                 memory.update_classification(state.segment_id, entry.baseline_tier, entry.domain, {
@@ -106,6 +135,21 @@ def classify_segments(workspace: Path, use_ai: bool, limit: int | None = None) -
                 })
             return memory.stats()
 
+        # AI-classified rows are already checkpointed. Preserve them on resume,
+        # while still allowing the AI pass to refine deterministic classifications.
+        pending = [state for state in pending if _needs_ai_classification(state)]
+        if limit is not None:
+            pending = pending[:limit]
+        skipped = [state for state in pending if state.tier == Tier.SKIP]
+        for state in skipped:
+            entry = catalog[state.segment_id]
+            memory.update_classification(state.segment_id, Tier.SKIP, entry.domain, {
+                "risk_reasons": entry.risk_reasons,
+                "classifier": "deterministic",
+            })
+        pending = [state for state in pending if state.tier != Tier.SKIP]
+        if not pending:
+            return memory.stats()
         client = _client()
         for batch in _chunks(pending, 30):
             payload = []
@@ -125,16 +169,16 @@ def classify_segments(workspace: Path, use_ai: bool, limit: int | None = None) -
                 reasoning={"effort": "low"},
                 instructions=CLASSIFIER_PROMPT,
                 input=json.dumps(payload, ensure_ascii=False),
-                text_format=ClassificationBatch,
+                text_format=_classification_response_format(batch),
                 store=False,
             )
             parsed = response.output_parsed
             if parsed is None:
                 raise RuntimeError("Classification response did not contain parsed output")
-            by_id = {item.segment_id: item for item in parsed.items}
             expected = {item.segment_id for item in batch}
-            if set(by_id) != expected:
+            if parsed.model_fields_set != expected:
                 raise RuntimeError("Classifier returned missing or unexpected segment IDs; batch was not saved")
+            by_id = {segment_id: getattr(parsed, segment_id) for segment_id in expected}
             for state in batch:
                 entry = catalog[state.segment_id]
                 item = by_id[state.segment_id]
@@ -179,7 +223,7 @@ def _translation_payload(memory: TranslationMemory, catalog: dict[str, CatalogEn
 
 def _review(client: OpenAI, route: Route, memory: TranslationMemory,
             catalog: dict[str, CatalogEntry], states: list[SegmentState],
-            candidates: dict[str, str], context_limit: int) -> ReviewBatch:
+            candidates: dict[str, str], context_limit: int) -> dict[str, ReviewDecision]:
     payload = _translation_payload(memory, catalog, states, context_limit)
     payload["candidates"] = candidates
     response = client.responses.parse(
@@ -187,12 +231,16 @@ def _review(client: OpenAI, route: Route, memory: TranslationMemory,
         reasoning={"effort": route.review_effort},
         instructions=SYSTEM_PROMPT + "\n\n" + REVIEW_PROMPT,
         input=json.dumps(payload, ensure_ascii=False),
-        text_format=ReviewBatch,
+        text_format=_exact_response_format("ReviewResponse", states, ReviewDecision),
         store=False,
     )
-    if response.output_parsed is None:
+    parsed = response.output_parsed
+    if parsed is None:
         raise RuntimeError("Review response did not contain parsed output")
-    return response.output_parsed
+    expected = {state.segment_id for state in states}
+    if parsed.model_fields_set != expected:
+        raise RuntimeError("Reviewer returned missing or unexpected segment IDs; batch was not saved")
+    return {segment_id: getattr(parsed, segment_id) for segment_id in expected}
 
 
 def _run_route(tier: Tier, economy: bool) -> Route:
@@ -260,17 +308,19 @@ def translate_segments(workspace: Path, tiers: tuple[Tier, ...] | None = None,
                     reasoning={"effort": route.effort},
                     instructions=SYSTEM_PROMPT,
                     input=json.dumps(payload, ensure_ascii=False),
-                    text_format=TranslationBatch,
+                    text_format=_exact_response_format(
+                        "TranslationResponse", batch, TranslationDecision
+                    ),
                     store=False,
                 )
                 request_count += 1
                 parsed = response.output_parsed
                 if parsed is None:
                     raise RuntimeError("Translation response did not contain parsed output")
-                candidates = {item.segment_id: item for item in parsed.items}
                 expected = {state.segment_id for state in batch}
-                if set(candidates) != expected:
+                if parsed.model_fields_set != expected:
                     raise RuntimeError("Translator returned missing or unexpected segment IDs; batch was not saved")
+                candidates = {segment_id: getattr(parsed, segment_id) for segment_id in expected}
                 for state in batch:
                     item = candidates[state.segment_id]
                     _progress(
@@ -284,15 +334,12 @@ def translate_segments(workspace: Path, tiers: tuple[Tier, ...] | None = None,
                         progress,
                         f"  REVIEW model={route.review_model} effort={route.review_effort}",
                     )
-                    review = _review(
+                    review_by_id = _review(
                         client, route, memory, catalog, batch,
                         {sid: item.translation for sid, item in candidates.items()},
                         context_limit,
                     )
                     request_count += 1
-                    review_by_id = {item.segment_id: item for item in review.items}
-                    if set(review_by_id) != expected:
-                        raise RuntimeError("Reviewer returned missing or unexpected segment IDs; batch was not saved")
 
                 glossary = _glossary_context(memory, batch)
                 for state in batch:

@@ -4,7 +4,10 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.Serialization.Json;
+using System.Text;
 using BepInEx;
+using HarmonyLib;
 using TMPro;
 using UnityEngine;
 using UnityEngine.TextCore.LowLevel;
@@ -16,7 +19,14 @@ namespace ValheimVietnameseFont
     {
         public const string PluginId = "dev.valheim-vn.font-fallback";
         public const string PluginName = "Valheim Vietnamese Font Fallback";
-        public const string PluginVersion = "0.2.11";
+        public const string PluginVersion = "0.3.0";
+        private const string Language = "Vietnamese";
+        private const string LanguageToken = "language_vietnamese";
+
+        private static readonly Dictionary<string, string> Translations =
+            new Dictionary<string, string>();
+        private static VietnameseFontPlugin _instance;
+        private Harmony _harmony;
 
         // Pre-warm the complete Vietnamese alphabet. The dynamic assets can
         // still add other glyphs from their source fonts on demand.
@@ -41,7 +51,175 @@ namespace ValheimVietnameseFont
 
         private void Awake()
         {
+            _instance = this;
+            LoadTranslations();
+            _harmony = new Harmony(PluginId);
+            _harmony.PatchAll(Assembly.GetExecutingAssembly());
             StartCoroutine(InstallWhenResourcesAreReady());
+        }
+
+        private void OnDestroy()
+        {
+            _harmony?.UnpatchSelf();
+        }
+
+        private void LoadTranslations()
+        {
+            var pluginDirectory = Path.GetDirectoryName(
+                typeof(VietnameseFontPlugin).Assembly.Location
+            );
+            var translationPath = Path.Combine(
+                pluginDirectory,
+                "Translations",
+                Language,
+                "ValheimVietHoa.json"
+            );
+            if (!File.Exists(translationPath))
+            {
+                Logger.LogError($"Translation file is missing: {translationPath}");
+                return;
+            }
+
+            try
+            {
+                var serializer = new DataContractJsonSerializer(
+                    typeof(Dictionary<string, string>),
+                    new DataContractJsonSerializerSettings { UseSimpleDictionaryFormat = true }
+                );
+                using (var stream = new MemoryStream(
+                    Encoding.UTF8.GetBytes(File.ReadAllText(translationPath))
+                ))
+                {
+                    var values = serializer.ReadObject(stream) as Dictionary<string, string>;
+                    Translations.Clear();
+                    if (values != null)
+                    {
+                        foreach (var pair in values)
+                        {
+                            if (!string.IsNullOrEmpty(pair.Key) && pair.Value != null)
+                            {
+                                Translations[pair.Key.TrimStart('$')] = pair.Value;
+                            }
+                        }
+                    }
+                }
+                Logger.LogInfo($"Loaded {Translations.Count} Vietnamese translations without Jötunn.");
+            }
+            catch (Exception exception)
+            {
+                Logger.LogError($"Could not read Vietnamese translations: {exception}");
+            }
+        }
+
+        private static object GetLocalizationInstance()
+        {
+            var localizationType = AccessTools.TypeByName("Localization");
+            var instanceField = localizationType == null
+                ? null
+                : AccessTools.Field(localizationType, "m_instance");
+            return instanceField?.GetValue(null);
+        }
+
+        private static string GetSelectedLanguage(object localization)
+        {
+            var method = localization == null
+                ? null
+                : AccessTools.Method(localization.GetType(), "GetSelectedLanguage");
+            return method?.Invoke(localization, null) as string ?? "English";
+        }
+
+        private static void AddLanguage(object localization)
+        {
+            if (localization == null)
+            {
+                return;
+            }
+            var languagesField = AccessTools.Field(localization.GetType(), "m_languages");
+            var languages = languagesField?.GetValue(localization) as List<string>;
+            if (languages != null && !languages.Contains(Language))
+            {
+                languages.Add(Language);
+            }
+        }
+
+        private static void ApplyTranslations(object localization, string language)
+        {
+            if (localization == null)
+            {
+                return;
+            }
+            AddLanguage(localization);
+            var addWord = AccessTools.Method(
+                localization.GetType(),
+                "AddWord",
+                new[] { typeof(string), typeof(string) }
+            );
+            if (addWord == null)
+            {
+                _instance?.Logger.LogError("Could not find Localization.AddWord.");
+                return;
+            }
+
+            if (Translations.TryGetValue(LanguageToken, out var languageName))
+            {
+                addWord.Invoke(localization, new object[] { LanguageToken, languageName });
+            }
+            if (!string.Equals(language, Language, StringComparison.Ordinal))
+            {
+                return;
+            }
+            foreach (var pair in Translations)
+            {
+                addWord.Invoke(localization, new object[] { pair.Key, pair.Value });
+            }
+        }
+
+        [HarmonyPatch]
+        private static class LoadLanguagesPatch
+        {
+            private static MethodBase TargetMethod()
+            {
+                return AccessTools.Method(AccessTools.TypeByName("Localization"), "LoadLanguages");
+            }
+
+            private static void Postfix(ref List<string> __result)
+            {
+                if (__result != null && !__result.Contains(Language))
+                {
+                    __result.Add(Language);
+                }
+                var localization = GetLocalizationInstance();
+                ApplyTranslations(localization, GetSelectedLanguage(localization));
+            }
+        }
+
+        [HarmonyPatch]
+        private static class SetupLanguagePatch
+        {
+            private static MethodBase TargetMethod()
+            {
+                return AccessTools.Method(AccessTools.TypeByName("Localization"), "SetupLanguage");
+            }
+
+            private static void Postfix(object __instance, string language)
+            {
+                ApplyTranslations(__instance, language);
+            }
+        }
+
+        [HarmonyPatch]
+        private static class SetupGuiPatch
+        {
+            private static MethodBase TargetMethod()
+            {
+                return AccessTools.Method(AccessTools.TypeByName("FejdStartup"), "SetupGui");
+            }
+
+            private static void Postfix()
+            {
+                var localization = GetLocalizationInstance();
+                ApplyTranslations(localization, GetSelectedLanguage(localization));
+            }
         }
 
         private IEnumerator InstallWhenResourcesAreReady()

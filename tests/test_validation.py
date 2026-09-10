@@ -15,6 +15,20 @@ def test_changed_number_fails() -> None:
     assert any("numeric" in error for error in result.errors)
 
 
+def test_english_ordinal_number_matches_vietnamese_cardinal() -> None:
+    assert validate_translation("Exploring the 10th world", "Khám phá thế giới thứ 10").ok
+
+
+def test_compact_measurement_matches_spaced_measurement() -> None:
+    assert validate_translation("Timber Pole 2m", "Cột gỗ khung 2 m").ok
+
+
+def test_changed_compact_measurement_fails() -> None:
+    result = validate_translation("Timber Pole 2m", "Cột gỗ khung 4 m")
+    assert not result.ok
+    assert any("numeric" in error for error in result.errors)
+
+
 def test_changed_rich_text_fails() -> None:
     result = validate_translation("<color=yellow>Warning</color>", "<b>Cảnh báo</b>")
     assert not result.ok

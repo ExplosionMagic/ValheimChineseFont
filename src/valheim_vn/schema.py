@@ -37,13 +37,16 @@ class CatalogEntry(BaseModel):
     risk_reasons: list[str] = Field(default_factory=list)
 
 
-class ClassificationItem(BaseModel):
-    segment_id: str
+class ClassificationDecision(BaseModel):
     tier: Tier
     domain: str
     speaker: str | None = None
     context_notes: str = ""
     ambiguity_notes: list[str] = Field(default_factory=list)
+
+
+class ClassificationItem(ClassificationDecision):
+    segment_id: str
 
 
 class ClassificationBatch(BaseModel):
@@ -55,8 +58,7 @@ class GlossaryCandidate(BaseModel):
     target: str
 
 
-class TranslationItem(BaseModel):
-    segment_id: str
+class TranslationDecision(BaseModel):
     translation: str
     confidence: float = Field(ge=0, le=1)
     notes: str = ""
@@ -65,15 +67,22 @@ class TranslationItem(BaseModel):
     glossary_candidates: list[GlossaryCandidate] = Field(default_factory=list)
 
 
+class TranslationItem(TranslationDecision):
+    segment_id: str
+
+
 class TranslationBatch(BaseModel):
     items: list[TranslationItem]
 
 
-class ReviewItem(BaseModel):
-    segment_id: str
+class ReviewDecision(BaseModel):
     verdict: Literal["pass", "revise", "reject"]
     revised_translation: str | None = None
     issues: list[str] = Field(default_factory=list)
+
+
+class ReviewItem(ReviewDecision):
+    segment_id: str
 
 
 class ReviewBatch(BaseModel):

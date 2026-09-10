@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0
+
+- Hoàn tất 100% khóa dịch của bản Valheim hiện tại.
+- Tích hợp bộ nạp bản dịch trực tiếp vào plugin; không còn phụ thuộc Jötunn.
+- Thêm bộ cài tự động và phương thức cài không mod có kiểm tra mã băm/khôi phục.
+
 ## 0.2.11
 
 - Patch the exact Steam-verified embedded Averia Sans/Serif fonts with all 102 missing Vietnamese characters.

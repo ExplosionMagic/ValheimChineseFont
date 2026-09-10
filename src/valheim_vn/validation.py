@@ -12,7 +12,15 @@ RUNTIME_TOKEN = re.compile(r"\$(?:\d+|[A-Za-z_][A-Za-z0-9_]*)")
 PRINTF_TOKEN = re.compile(r"%(?:\d+\$)?[-+#0]*(?:\d+|\*)?(?:\.\d+)?[a-zA-Z%]")
 FORMAT_TOKEN = re.compile(r"\{\d+(?::[^}]*)?\}")
 RICH_TAG = re.compile(r"</?\w+(?:=[^>]+)?>")
-NUMBER = re.compile(r"(?<![\w])[-+]?\d+(?:[.,]\d+)?%?(?![\w])")
+# Capture the numeric value without an English ordinal suffix so that, for
+# example, "10th world" and Vietnamese "thế giới thứ 10" compare as the same
+# protected value. Recognize compact measurements such as "2m", while still
+# ignoring digits embedded in arbitrary identifiers.
+NUMBER = re.compile(
+    r"(?<![\w])([-+]?\d+(?:[.,]\d+)?%?)(?:st|nd|rd|th)?"
+    r"(?:(?=(?:mm|cm|km|m|mg|kg|g|ms|s|h)\b)|(?![\w]))",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)

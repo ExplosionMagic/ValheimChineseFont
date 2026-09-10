@@ -1,10 +1,10 @@
 # Valheim Việt Hóa
 
-Bản dịch tiếng Việt hoàn chỉnh cho Valheim, gồm 4.247 chuỗi đã qua kiểm tra tự động về token,
+Bản dịch tiếng Việt hoàn chỉnh cho Valheim, gồm 6.030 khóa có nội dung đã qua kiểm tra tự động về token,
 placeholder, thẻ rich-text và số liệu. Văn phong giao diện ưu tiên rõ ràng; hội thoại, bia đá và
 truyền thuyết mang sắc thái sử thi Viking nhưng không làm đổi cơ chế trò chơi.
 
-Gói mod dùng Jötunn để nạp bản dịch lúc chạy và plugin TextMeshPro nhỏ để thay toàn bộ
+Gói mod dùng một plugin BepInEx nhỏ để nạp bản dịch trực tiếp, không cần Jötunn, đồng thời thay toàn bộ
 Valheim-Norse/Valheim-Norsebold bằng SVN-Norse. Averia Sans và Averia Serif nguyên bản của game
 được giữ lại. Hai font nguồn đi kèm mod được tạo từ đúng bản Averia nhúng trong game rồi bổ sung
 102 ký tự tiếng Việt còn thiếu; plugin dùng chúng để thêm glyph trực tiếp vào asset TMP gốc. Atlas,
@@ -17,13 +17,21 @@ an toàn. Mod **không sửa `resources.assets`**.
 ## Cài đặt
 
 Sau khi gói được duyệt trên Thunderstore, cách dễ nhất là cài bằng r2modman/Thunderstore Mod
-Manager; BepInEx và Jötunn sẽ được cài theo dependency.
+Manager; chỉ BepInEx được cài theo dependency.
 
 Cài thủ công:
 
-1. Cài `denikson-BepInExPack_Valheim` và `ValheimModding-Jotunn`.
+1. Cài `denikson-BepInExPack_Valheim`; không cài Jötunn.
 2. Chép thư mục `plugins/ValheimVietHoa` trong gói release vào `Valheim/BepInEx`.
 3. Khởi động game qua BepInEx và chọn `Vietnamese` trong phần ngôn ngữ.
+
+Release còn có installer nhỏ cho Windows, macOS và Linux/Steam Deck. Nó tự dò Steam Library, cho
+chọn đường dẫn game và hỗ trợ hai chế độ: BepInEx-only hoặc không mod (backup rồi vá trực tiếp
+`resources.assets` theo đúng hash build). Mỗi lần push lên `main`, GitHub Actions cập nhật release
+`main-latest`; tag `v*` tạo release ổn định.
+
+Xem [hướng dẫn cài đặt thủ công chi tiết](docs/CAI_DAT_THU_CONG.md) cho Windows, macOS, Linux và
+Steam Deck, kèm cách kiểm tra log, cập nhật, gỡ cài đặt và xử lý lỗi font.
 
 Gói public đi kèm SVN-Norse Regular/Bold để thay trọn bộ font Norse của Valheim, tránh trộn riêng
 các ký tự có dấu với font gốc. Với Averia Sans và Averia Serif, plugin giữ nguyên TMP asset, atlas,
@@ -53,15 +61,16 @@ SQLite translation memory, routes each phrase through an inspection tier, valida
 syntax, and produces either:
 
 - a separate, verified `resources.assets` for a vanilla launcher patch; or
-- `Translations/Vietnamese/community_translation.json` for Jötunn/BepInEx.
+- `Translations/Vietnamese/community_translation.json` for the bundled BepInEx loader.
 
 It never edits the installed game. Installation belongs in the launcher, where the original hash,
 backup, game-running state, and rollback can be handled atomically.
 
 ## What was verified locally
 
-The inspected macOS Valheim build uses Unity `6000.0.61f1`. Its 73 MiB `resources.assets` contains
-seven localization `TextAsset`s, 4,743 row occurrences, and 4,251 unique keys. Decompiled game code
+The inspected macOS Valheim build uses Unity `6000.0.61f1`. Its 75 MiB `resources.assets` contains
+13 localization `TextAsset`s, 6,585 row occurrences, and 6,039 unique keys (6,030 meaningful keys
+plus nine empty/unused keys). Decompiled game code
 shows that Valheim:
 
 1. gets available languages from the header of the base `localization` CSV;
@@ -72,8 +81,8 @@ Therefore a vanilla Vietnamese patch needs a `Vietnamese` column in every locali
 `language_vietnamese` display token. The asset builder does exactly that.
 
 The builder was tested against source SHA-256
-`b4134e2fad8257e98185524af2aa60e5b00348c93523323d1d2b7c9ba2b14de5`. It re-opened the produced
-Unity file, verified all seven Vietnamese headers, confirmed all 536 non-localization Unity objects
+`565b644e081411580b16ff27014331cf061942082d67dd63ddcc7e00ec491aa0`. It re-opened the produced
+Unity file, verified all 13 Vietnamese headers, confirmed all 601 non-localization Unity objects
 were byte-identical, and confirmed every pre-existing official localization field was unchanged.
 
 ## Setup
@@ -167,6 +176,20 @@ uv run valheim-vn translate --workspace workspace \
 Repeat the same command to resume the next unfinished phrases. `--max-requests` is a local request
 ceiling, not a dollar estimate; project billing limits remain the authoritative cost boundary.
 
+The installed Codex CLI is also supported as a separate provider. It uses the signed-in local Codex
+session rather than `OPENAI_API_KEY`, runs in an ephemeral read-only sandbox, requires exact
+structured output, performs a fresh review pass by default, and saves each completed batch to the
+same translation memory:
+
+```bash
+uv run valheim-vn translate --workspace workspace \
+  --provider codex --codex-batch-size 12 --execute
+```
+
+`--codex-model` optionally overrides the configured Codex model. `--codex-timeout` controls each
+local invocation, and `--max-requests` becomes the invocation ceiling for this provider.
+`--codex-no-review` is available for experiments, but release translations should keep review on.
+
 ## Context memory and style
 
 Each request includes the English source, semantic key family, domain, deterministic risks, AI
@@ -202,7 +225,7 @@ uv run valheim-vn validate --workspace workspace
 
 ## Build outputs
 
-Jötunn automatically discovers the default JSON layout when copied under the BepInEx plugin path:
+The bundled plugin reads the default JSON layout when copied under the BepInEx plugin path:
 
 ```bash
 uv run valheim-vn export-json --workspace workspace

@@ -1,6 +1,6 @@
 # Valheim Việt Hóa
 
-Bản Việt hóa đầy đủ cho Valheim với 4.247 chuỗi, được biên tập theo hướng dễ đọc và giữ chất sử thi
+Bản Việt hóa đầy đủ cho Valheim với 6.030 khóa có nội dung, được biên tập theo hướng dễ đọc và giữ chất sử thi
 Viking ở hội thoại, bia đá, giấc mơ và truyền thuyết.
 
 ## Điểm nổi bật
@@ -13,16 +13,20 @@ Viking ở hội thoại, bia đá, giấc mơ và truyền thuyết.
 - Giữ nguyên TMP asset, atlas, shader và material viền đen Averia của Valheim; dùng bản font đã vá từ
   đúng Averia nhúng trong game để thêm trực tiếp 102 glyph tiếng Việt còn thiếu lúc chạy.
 - Dùng Noto Sans/Serif có sẵn trong Valheim làm lớp dự phòng cho các font giao diện khác.
-- Không chỉnh sửa `resources.assets`; có thể gỡ sạch bằng mod manager.
+- Tự nạp JSON bằng một plugin BepInEx nhỏ; không cần Jötunn.
+- Gói Thunderstore không chỉnh sửa `resources.assets`; có thể gỡ sạch bằng mod manager.
 
 ## Cài đặt
 
 Khuyên dùng r2modman hoặc Thunderstore Mod Manager. Chọn **Install with Mod Manager**, rồi chạy
-Valheim từ profile đã cài mod. BepInEx và Jötunn sẽ được cài tự động.
+Valheim từ profile đã cài mod. Chỉ BepInEx sẽ được cài tự động.
 
-Cài thủ công: cài BepInExPack Valheim và Jötunn, sau đó chép thư mục
+Cài thủ công: cài BepInExPack Valheim (không cần Jötunn), sau đó chép thư mục
 `plugins/ValheimVietHoa` trong gói vào thư mục `BepInEx`. Trong game, chọn `Vietnamese` ở phần
 ngôn ngữ.
+
+Xem [hướng dẫn cài đặt thủ công chi tiết](https://github.com/monokaijs/valheim-viet-hoa/blob/main/docs/CAI_DAT_THU_CONG.md)
+cho Windows, macOS, Linux và Steam Deck, kèm cấu trúc thư mục mẫu và cách xử lý lỗi.
 
 ## Phản hồi bản dịch
 

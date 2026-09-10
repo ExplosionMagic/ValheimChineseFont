@@ -9,3 +9,4 @@ dist/
 build/
 font-patch/bin/
 font-patch/obj/
+.tmp/

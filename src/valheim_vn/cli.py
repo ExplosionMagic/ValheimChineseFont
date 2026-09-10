@@ -13,6 +13,7 @@ from .assets import (
     extract_catalog, inspect_resources, patch_resources, read_catalog,
     sha256_file, write_catalog,
 )
+from .local_codex import translate_segments_codex
 from .memory import TranslationMemory
 from .schema import Tier
 from .validation import locked_glossary_errors, validate_translation
@@ -84,12 +85,24 @@ def cmd_classify(args: argparse.Namespace) -> None:
 
 def cmd_translate(args: argparse.Namespace) -> None:
     if not args.execute:
-        raise RuntimeError("Translation can incur API charges. Re-run with --execute after reviewing status and limits.")
+        raise RuntimeError(
+            "Translation can consume API charges or local Codex allowance. "
+            "Re-run with --execute after reviewing status and limits."
+        )
     tiers = tuple(Tier(value) for value in args.tier) if args.tier else None
-    stats = translate_segments(
-        _workspace(args.workspace), tiers=tiers, limit=args.limit, max_requests=args.max_requests,
-        economy=args.economy, context_limit=args.context_limit, progress=not args.quiet,
-    )
+    if args.provider == "codex":
+        stats = translate_segments_codex(
+            _workspace(args.workspace), tiers=tiers, limit=args.limit,
+            max_invocations=args.max_requests, context_limit=args.context_limit,
+            batch_size=args.codex_batch_size, model=args.codex_model,
+            review=not args.codex_no_review, timeout=args.codex_timeout,
+            progress=not args.quiet,
+        )
+    else:
+        stats = translate_segments(
+            _workspace(args.workspace), tiers=tiers, limit=args.limit, max_requests=args.max_requests,
+            economy=args.economy, context_limit=args.context_limit, progress=not args.quiet,
+        )
     print(json.dumps(stats, ensure_ascii=False, indent=2))
 
 
@@ -211,11 +224,17 @@ def build_parser() -> argparse.ArgumentParser:
     classify_p.add_argument("--limit", type=int)
     classify_p.set_defaults(func=cmd_classify)
 
-    translate_p = sub.add_parser("translate", help="Translate classified segments through the Responses API")
+    translate_p = sub.add_parser(
+        "translate", help="Translate classified segments with Responses API or local Codex"
+    )
     translate_p.add_argument("--workspace", default=str(DEFAULT_WORKSPACE))
+    translate_p.add_argument("--provider", choices=("responses", "codex"), default="responses")
     translate_p.add_argument("--tier", action="append", choices=[t.value for t in Tier if t != Tier.SKIP])
     translate_p.add_argument("--limit", type=int, help="Maximum segments for this run")
-    translate_p.add_argument("--max-requests", type=int, help="Hard API-request ceiling for this run")
+    translate_p.add_argument(
+        "--max-requests", type=int,
+        help="Hard Responses API request or local Codex invocation ceiling for this run",
+    )
     translate_p.add_argument(
         "--economy", action="store_true",
         help="Use gpt-5.6-luna without reasoning for one-phrase translation and review checkpoints",
@@ -225,7 +244,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum related phrases included as context for each phrase (default: 8)",
     )
     translate_p.add_argument("--quiet", action="store_true", help="Suppress per-phrase progress logs")
-    translate_p.add_argument("--execute", action="store_true", help="Acknowledge that API calls may incur charges")
+    translate_p.add_argument("--codex-model", help="Optional model override passed to the local Codex CLI")
+    translate_p.add_argument("--codex-batch-size", type=int, default=12)
+    translate_p.add_argument("--codex-timeout", type=float, default=1800.0)
+    translate_p.add_argument(
+        "--codex-no-review", action="store_true",
+        help="Skip the separate local Codex review pass (deterministic validation still runs)",
+    )
+    translate_p.add_argument(
+        "--execute", action="store_true",
+        help="Acknowledge that translation consumes API charges or local Codex allowance",
+    )
     translate_p.set_defaults(func=cmd_translate)
 
     status_p = sub.add_parser("status", help="Show translation-memory status counts")

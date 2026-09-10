@@ -8,6 +8,15 @@ SOURCE = (
 ).read_text(encoding="utf-8")
 
 
+def test_plugin_loads_translation_without_jotunn() -> None:
+    assert 'PluginVersion = "0.3.0"' in SOURCE
+    assert "DataContractJsonSerializer" in SOURCE
+    assert 'AccessTools.Method(\n                localization.GetType(),\n                "AddWord"' in SOURCE
+    assert 'AccessTools.TypeByName("Localization")' in SOURCE
+    assert 'Path.Combine(\n                pluginDirectory,\n                "Translations"' in SOURCE
+    assert "Jotunn" not in SOURCE
+
+
 def test_svn_norse_replaces_the_whole_valheim_norse_font() -> None:
     assert 'StartsWith("Valheim-Norse"' in SOURCE
     assert "text.font = replacement;" in SOURCE

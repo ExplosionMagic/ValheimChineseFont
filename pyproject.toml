@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["fonttools>=4.63.0", "pytest>=8.4.0"]
+dev = ["bsdiff4>=1.2.6", "fonttools>=4.63.0", "pytest>=8.4.0"]
 
 [project.scripts]
 valheim-vn = "valheim_vn.cli:main"
@@ -25,4 +25,3 @@ packages = ["src/valheim_vn"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
