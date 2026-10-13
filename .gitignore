@@ -1,4 +1,5 @@
 # Ignore
+.prettierignore
 .vs/
 .git/
 bin/
