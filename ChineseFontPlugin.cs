@@ -6,7 +6,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
-using System.Resources;
 using TMPro;
 using UnityEngine;
 using UnityEngine.TextCore.LowLevel;
@@ -30,8 +29,7 @@ namespace ValheimChineseFont
         private ConfigEntry<string> _preloadCharsFile;
         private ConfigEntry<int> _atlasSize;
 
-        // ---- 兜底字符（未提供外部字表时使用）----
-        // ASCII + 中文标点 + 约 200 个高频汉字
+        // ---- 兜底字符 ----
         private const string DefaultPreloadChars =
             "0123456789" +
             "abcdefghijklmnopqrstuvwxyz" +
@@ -50,8 +48,13 @@ namespace ValheimChineseFont
         private string _serifBoldPath;
         private string _preloadChars;
 
-        private TMP_FontAsset _sansFallback;   // 游戏内置 Noto Sans（如存在）
-        private TMP_FontAsset _serifFallback;  // 游戏内置 Noto Serif（如存在）
+        // 从 DreamHan 创建的 TMP 字体，作为 Averia 的 fallback
+        private TMP_FontAsset _customSans;
+        private TMP_FontAsset _customSerif;
+        // 从游戏内置 Noto 创建的安全 fallback（可选）
+        private TMP_FontAsset _sansFallback;
+        private TMP_FontAsset _serifFallback;
+
         private readonly HashSet<int> _patchedAveriaAssets = new HashSet<int>();
         private bool _installed;
 
@@ -81,7 +84,6 @@ namespace ValheimChineseFont
 
         private IEnumerator InstallWhenResourcesAreReady()
         {
-            // 等待游戏的 Averia 字体资产加载完毕
             for (var attempt = 1; attempt <= 300; attempt++)
             {
                 if (TryInstall()) yield break;
@@ -94,7 +96,7 @@ namespace ValheimChineseFont
         {
             if (_installed) return true;
 
-            // 1. 检查游戏字体资产是否已加载
+            // 1. 检查游戏 Averia 字体资产是否已加载
             var allAssets = Resources.FindObjectsOfTypeAll<TMP_FontAsset>();
             var averiaAssets = allAssets.Where(a => a != null && (
                 a.name.StartsWith("Valheim-AveriaSansLibre", StringComparison.OrdinalIgnoreCase) ||
@@ -111,9 +113,8 @@ namespace ValheimChineseFont
             if (_sansRegularPath == null || _serifRegularPath == null)
             {
                 Logger.LogError(
-                    "未找到必需的字体文件。请确认 Fonts 目录下的文件名为 " +
-                    "DreamHanSansCN-Regular.ttf 和 DreamHanSerifCN-Regular.ttf， " +
-                    "或在配置文件中修改文件名。"
+                    "未找到必需的字体文件。请确认 Fonts 目录下存在 " +
+                    "DreamHanSansCN-Regular.ttf 和 DreamHanSerifCN-Regular.ttf。"
                 );
                 _installed = true;
                 return true;
@@ -126,7 +127,18 @@ namespace ValheimChineseFont
             _preloadChars = LoadPreloadChars();
             Logger.LogInfo($"预加载字符数：{_preloadChars.Length}");
 
-            // 4. 可选：从游戏内置 Noto 创建回退资源（找不到也不影响）
+            // 4. 从 DreamHan 字体文件创建 TMP_FontAsset（作为 Averia 的 fallback）
+            _customSans = CreateFallback(_sansRegularPath, "ValheimCN-Sans");
+            _customSerif = CreateFallback(_serifRegularPath, "ValheimCN-Serif");
+
+            if (_customSans == null || _customSerif == null)
+            {
+                Logger.LogError("无法从 DreamHan 字体文件创建 TMP_FontAsset。");
+                _installed = true;
+                return true;
+            }
+
+            // 5. 从游戏内置 Noto 创建安全 fallback（可选）
             var sourceFonts = Resources.FindObjectsOfTypeAll<Font>();
             var sansSource = sourceFonts.FirstOrDefault(f => f.name == "NotoSans-Regular");
             var serifSource = sourceFonts.FirstOrDefault(f => f.name == "NotoSerif-Regular");
@@ -135,14 +147,16 @@ namespace ValheimChineseFont
             if (serifSource != null)
                 _serifFallback = CreateFallback(serifSource, "ValheimCN-NotoSerif-Fallback");
 
-            // 5. 启用 TMP 材质预设匹配（保留原版描边效果）
+            // 6. 启用 TMP 材质预设匹配（让 fallback 字符也带上原版描边）
             EnableFallbackMaterialPresetMatching();
 
-            // 6. 处理已加载的 Averia 资产，并持续监控后续加载
+            // 7. 给已加载的 Averia 挂上 DreamHan fallback
             var patched = PatchLoadedFontAssets();
+
+            // 8. 持续监控后续加载的 Averia 资产
             StartCoroutine(PatchFontsAsTheyLoad());
 
-            Logger.LogInfo($"中文字体替换就绪：本次修补 {patched} 个 Averia 资产。");
+            Logger.LogInfo($"中文字体回退链就绪：本次修补 {patched} 个 Averia 资产。");
             _installed = true;
             return true;
         }
@@ -152,12 +166,9 @@ namespace ValheimChineseFont
         private string ResolveFontPath(string fileName)
         {
             if (string.IsNullOrWhiteSpace(fileName)) return null;
-            // 绝对路径
             if (Path.IsPathRooted(fileName) && File.Exists(fileName)) return fileName;
-            // 相对 DLL 目录
             var candidate = Path.Combine(_pluginDirectory, fileName);
             if (File.Exists(candidate)) return candidate;
-            // 相对 DLL 目录下的 Fonts 子目录
             candidate = Path.Combine(_pluginDirectory, "Fonts", fileName);
             if (File.Exists(candidate)) return candidate;
             return null;
@@ -171,7 +182,6 @@ namespace ValheimChineseFont
                 try
                 {
                     var text = File.ReadAllText(filePath);
-                    // 去掉空白和换行，保留所有非空白字符
                     var chars = new string(text.Where(c => !char.IsWhiteSpace(c)).Distinct().ToArray());
                     if (chars.Length > 0) return chars;
                 }
@@ -184,6 +194,20 @@ namespace ValheimChineseFont
         }
 
         // ---- 字体资源创建 ----
+
+        private TMP_FontAsset CreateFallback(string fontPath, string assetName)
+        {
+            var asset = TMP_FontAsset.CreateFontAsset(
+                fontPath,
+                0,
+                64,
+                8,
+                GlyphRenderMode.SDFAA,
+                _atlasSize.Value,
+                _atlasSize.Value
+            );
+            return PrepareFallback(asset, assetName);
+        }
 
         private TMP_FontAsset CreateFallback(Font source, string assetName)
         {
@@ -206,6 +230,11 @@ namespace ValheimChineseFont
             asset.name = assetName;
             asset.hideFlags = HideFlags.HideAndDontSave;
             asset.isMultiAtlasTexturesEnabled = true;
+
+            // 让 fallback 也能支持描边（当 TMP 从 fallback 取字形时）
+            if (asset.material != null)
+                asset.material.EnableKeyword("OUTLINE_ON");
+
             return asset;
         }
 
@@ -234,7 +263,7 @@ namespace ValheimChineseFont
             Logger.LogInfo("已启用 TMP 回退材质预设匹配。");
         }
 
-        // ---- 持续修补逻辑 ----
+        // ---- 回退链核心逻辑 ----
 
         private IEnumerator PatchFontsAsTheyLoad()
         {
@@ -252,16 +281,24 @@ namespace ValheimChineseFont
             foreach (var asset in Resources.FindObjectsOfTypeAll<TMP_FontAsset>())
             {
                 if (asset == null) continue;
+                if (asset == _customSans || asset == _customSerif) continue;
                 if (asset == _sansFallback || asset == _serifFallback) continue;
+
+                // 用 GetInstanceID 去重（同名资产可能被多次枚举）
+                if (!_patchedAveriaAssets.Add(asset.GetInstanceID())) continue;
 
                 if (IsValheimAveriaSans(asset))
                 {
-                    if (PopulateAveriaAsset(asset, isSerif: false)) patched++;
+                    // 把 DreamHan Sans 挂在 Averia Sans 前面
+                    if (AddAssetFallback(asset, _customSans)) patched++;
+                    // 再加 Noto 作为最终安全网
+                    if (_sansFallback != null) AddAssetFallback(asset, _sansFallback);
                     continue;
                 }
                 if (IsValheimAveriaSerif(asset))
                 {
-                    if (PopulateAveriaAsset(asset, isSerif: true)) patched++;
+                    if (AddAssetFallback(asset, _customSerif)) patched++;
+                    if (_serifFallback != null) AddAssetFallback(asset, _serifFallback);
                 }
             }
             return patched;
@@ -272,74 +309,6 @@ namespace ValheimChineseFont
 
         private bool IsValheimAveriaSerif(TMP_FontAsset asset) =>
             asset.name.StartsWith("Valheim-AveriaSerifLibre", StringComparison.OrdinalIgnoreCase);
-
-        private bool PopulateAveriaAsset(TMP_FontAsset asset, bool isSerif)
-        {
-            if (!_patchedAveriaAssets.Add(asset.GetInstanceID())) return false;
-
-            // 判断该资产是否为 Bold 变体
-            bool isBold = asset.name.IndexOf("Bold", StringComparison.OrdinalIgnoreCase) >= 0;
-
-            string sourcePath;
-            if (isSerif)
-                sourcePath = (isBold && _serifBoldPath != null) ? _serifBoldPath : _serifRegularPath;
-            else
-                sourcePath = (isBold && _sansBoldPath != null) ? _sansBoldPath : _sansRegularPath;
-
-            // 反射注入源字体路径
-            var sourceField = typeof(TMP_FontAsset).GetField(
-                "m_SourceFontFile",
-                BindingFlags.Instance | BindingFlags.NonPublic
-            );
-            var sourcePathField = typeof(TMP_FontAsset).GetField(
-                "m_SourceFontFilePath",
-                BindingFlags.Instance | BindingFlags.NonPublic
-            );
-            if (sourceField == null || sourcePathField == null)
-            {
-                Logger.LogError($"无法为 {asset.name} 注入源字体。");
-                return true;
-            }
-
-            try
-            {
-                sourceField.SetValue(asset, null);
-                sourcePathField.SetValue(asset, sourcePath);
-            }
-            catch (Exception e)
-            {
-                Logger.LogError($"注入源字体失败 {asset.name}：{e.Message}");
-                return true;
-            }
-
-            asset.atlasPopulationMode = AtlasPopulationMode.Dynamic;
-            asset.isMultiAtlasTexturesEnabled = true;
-
-            // 添加回退字体（如果创建成功）
-            var safetyFallback = isSerif ? _serifFallback : _sansFallback;
-            if (safetyFallback != null) AddAssetFallback(asset, safetyFallback);
-
-            // 预加载常用字
-            var charactersToAdd = new string(
-                _preloadChars.Where(c => !asset.HasCharacter(c)).ToArray()
-            );
-            if (charactersToAdd.Length > 0)
-                asset.TryAddCharacters(charactersToAdd, out var _, true);
-
-            var unresolved = _preloadChars.Count(c => !asset.HasCharacter(c));
-            if (unresolved > 0)
-                Logger.LogWarning($"{asset.name} 仍有 {unresolved} 个预加载字符未成功加入。");
-
-            Logger.LogInfo(
-                $"已就地填充 {asset.name}（源：{Path.GetFileName(sourcePath)}），" +
-                $"图集纹理数：{asset.atlasTextureCount}。"
-            );
-
-            // 强制刷新使用该字体的文本组件
-            foreach (var text in Resources.FindObjectsOfTypeAll<TMP_Text>())
-                if (text != null && text.font == asset) text.SetAllDirty();
-            return true;
-        }
 
         private static bool AddAssetFallback(TMP_FontAsset asset, TMP_FontAsset fallback)
         {
