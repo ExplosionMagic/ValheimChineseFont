@@ -1,5 +1,6 @@
 ﻿using BepInEx;
 using BepInEx.Configuration;
+using HarmonyLib;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -10,16 +11,29 @@ using TMPro;
 using UnityEngine;
 using UnityEngine.TextCore.LowLevel;
 
+
+
 namespace ValheimChineseFont
 {
     [BepInPlugin(PluginId, PluginName, PluginVersion)]
+    [BepInDependency("com.jotunn.jotunn", BepInDependency.DependencyFlags.SoftDependency)]
+
     public sealed class ChineseFontPlugin : BaseUnityPlugin
     {
-        public const string PluginId = "dev.valheim-cn.font-replacer";
-        public const string PluginName = "Valheim Chinese Font Replacer";
+        private Harmony _harmony;
+        public const string PluginId = "dev.valheim-cn.font-patcher";
+        public const string PluginName = "Valheim Chinese Font patcher";
         public const string PluginVersion = "0.1.0";
 
         private static ChineseFontPlugin _instance;
+        
+        private TMP_FontAsset _customSans;
+        private TMP_FontAsset _customSerif;
+        
+        private Material _sansOutlineMaterial;
+        private Material _serifOutlineMaterial;
+        
+        internal static readonly Dictionary<string, TMP_FontAsset> FontReplacements = new Dictionary<string, TMP_FontAsset>();
 
         // ---- 配置项 ----
         private ConfigEntry<string> _sansRegularFile;
@@ -61,6 +75,7 @@ namespace ValheimChineseFont
         private void Awake()
         {
             _instance = this;
+            _harmony = new Harmony(PluginId);
             _pluginDirectory = Path.GetDirectoryName(typeof(ChineseFontPlugin).Assembly.Location);
 
             _sansRegularFile = Config.Bind("Fonts", "SansRegular",
@@ -79,17 +94,109 @@ namespace ValheimChineseFont
             _atlasSize = Config.Bind("Fonts", "AtlasSize", 4096,
                 "字体图集尺寸，建议 2048 或 4096");
 
+            _harmony.PatchAll(Assembly.GetExecutingAssembly());
+
+            InstallFontsSynchronously();
+
             StartCoroutine(InstallWhenResourcesAreReady());
+        }
+        private void InstallFontsSynchronously()
+        {
+            try
+            {
+                _sansRegularPath = ResolveFontPath(_sansRegularFile.Value);
+                _serifRegularPath = ResolveFontPath(_serifRegularFile.Value);
+                _sansBoldPath = ResolveFontPath(_sansBoldFile.Value);
+                _serifBoldPath = ResolveFontPath(_serifBoldFile.Value);
+
+                if (_sansRegularPath == null || _serifRegularPath == null)
+                {
+                    Logger.LogError("字体文件未找到，无法提前注册。");
+                    return;
+                }
+
+                _customSans = CreateFallback(_sansRegularPath, "ValheimCN-Sans");
+                _customSerif = CreateFallback(_serifRegularPath, "ValheimCN-Serif");
+
+                if (_customSans == null || _customSerif == null)
+                {
+                    Logger.LogError("无法同步创建字体资产。");
+                    return;
+                }
+
+                FontReplacements["Valheim-AveriaSansLibre"] = _customSans;
+                FontReplacements["Valheim-AveriaSerifLibre"] = _customSerif;
+                FontReplacements["Valheim-AveriaSansLibre-Bold"] = _customSans;
+                FontReplacements["Valheim-AveriaSerifLibre-Bold"] = _customSerif;
+
+                Logger.LogInfo($"已提前注册 {FontReplacements.Count} 个字体替换条目。");
+            }
+            catch (Exception e)
+            {
+                Logger.LogError($"同步注册字体失败：{e}");
+            }
+        }
+
+        private void ApplyMaterialPreset(TMP_FontAsset custom, Material template)
+        {
+            if (custom == null || template == null || custom.material == null) return;
+
+            // 用新字体的 atlas 作为基础
+            var newMat = new Material(custom.material);
+            // 从原版材质复制 shader 参数（outline、shadow、glow 等）
+            TMP_MaterialManager.CopyMaterialPresetProperties(template, newMat);
+            newMat.hideFlags = HideFlags.HideAndDontSave;
+
+            // 替换字体的默认材质
+            custom.material = newMat;
+            custom.material.name = custom.name + " Outline";
         }
 
         private IEnumerator InstallWhenResourcesAreReady()
         {
             for (var attempt = 1; attempt <= 300; attempt++)
             {
-                if (TryInstall()) yield break;
-                yield return null;
+                if (text == null || text.font == null) continue;
+
+                if (FontReplacements.TryGetValue(text.font.name, out var replacement))
+                {
+                    var sourceMat = text.fontSharedMaterial;
+                    bool isSans = replacement == _customSans;
+
+                    // ↓↓↓ 首次遇到原版材质时，以它作为模板复制描边属性 ↓↓↓
+                    if (sourceMat != null)
+                    {
+                        if (isSans && _sansOutlineMaterial == null)
+                        {
+                            _sansOutlineMaterial = new Material(replacement.material);
+                            TMP_MaterialManager.CopyMaterialPresetProperties(sourceMat, _sansOutlineMaterial);
+                            _sansOutlineMaterial.hideFlags = HideFlags.HideAndDontSave;
+                            _sansOutlineMaterial.name = "ValheimCN-Sans-Outline";
+                            Logger.LogInfo("已从原版 Sans 材质捕获描边预设。");
+                        }
+                        else if (!isSans && _serifOutlineMaterial == null)
+                        {
+                            _serifOutlineMaterial = new Material(replacement.material);
+                            TMP_MaterialManager.CopyMaterialPresetProperties(sourceMat, _serifOutlineMaterial);
+                            _serifOutlineMaterial.hideFlags = HideFlags.HideAndDontSave;
+                            _serifOutlineMaterial.name = "ValheimCN-Serif-Outline";
+                            Logger.LogInfo("已从原版 Serif 材质捕获描边预设。");
+                        }
+                    }
+
+                    // 替换字体
+                    text.font = replacement;
+
+                    // 套用已捕获的描边材质
+                    if (isSans && _sansOutlineMaterial != null)
+                        text.fontSharedMaterial = _sansOutlineMaterial;
+                    else if (!isSans && _serifOutlineMaterial != null)
+                        text.fontSharedMaterial = _serifOutlineMaterial;
+
+                    replaced++;
+                }
             }
-            Logger.LogError("300 帧内未检测到游戏的 Averia 字体资产，替换中止。");
+            return replaced;
         }
 
         private bool TryInstall()
@@ -104,11 +211,11 @@ namespace ValheimChineseFont
             )).ToList();
             if (averiaAssets.Count == 0) return false;
 
-            // 2. 解析字体文件路径
-            _sansRegularPath = ResolveFontPath(_sansRegularFile.Value);
-            _serifRegularPath = ResolveFontPath(_serifRegularFile.Value);
-            _sansBoldPath = ResolveFontPath(_sansBoldFile.Value);
-            _serifBoldPath = ResolveFontPath(_serifBoldFile.Value);
+            // 2. 解析字体文件路径 // 移到 Awake
+            //_sansRegularPath = ResolveFontPath(_sansRegularFile.Value);
+            //_serifRegularPath = ResolveFontPath(_serifRegularFile.Value);
+            //_sansBoldPath = ResolveFontPath(_sansBoldFile.Value);
+            //_serifBoldPath = ResolveFontPath(_serifBoldFile.Value);
 
             if (_sansRegularPath == null || _serifRegularPath == null)
             {
@@ -160,7 +267,7 @@ namespace ValheimChineseFont
             _installed = true;
             return true;
         }
-
+        
         // ---- 字体路径 / 字符表解析 ----
 
         private string ResolveFontPath(string fileName)
@@ -224,6 +331,20 @@ namespace ValheimChineseFont
             return PrepareFallback(asset, assetName);
         }
 
+        private TMP_FontAsset CreateFallback(string fontPath, string assetName)
+        {
+            var asset = TMP_FontAsset.CreateFontAsset(
+                fontPath,
+                0,                              // 采样点大小（0 = 自动）
+                64,
+                8,
+                GlyphRenderMode.SDFAA,
+                _atlasSize.Value,
+                _atlasSize.Value
+            );
+            return PrepareFallback(asset, assetName);
+        }
+
         private TMP_FontAsset PrepareFallback(TMP_FontAsset asset, string assetName)
         {
             if (asset == null) return null;
@@ -265,16 +386,17 @@ namespace ValheimChineseFont
 
         // ---- 回退链核心逻辑 ----
 
-        private IEnumerator PatchFontsAsTheyLoad()
-        {
-            var wait = new WaitForSecondsRealtime(1f);
-            while (true)
-            {
-                PatchLoadedFontAssets();
-                yield return wait;
-            }
-        }
+        //private IEnumerator PatchFontsAsTheyLoad()
+        //{
+        //    var wait = new WaitForSecondsRealtime(1f);
+        //    while (true)
+        //    {
+        //        PatchLoadedFontAssets();
+        //        yield return wait;
+        //    }
+        //}
 
+        // 为所有非自定义字体资产添加回退
         private int PatchLoadedFontAssets()
         {
             var patched = 0;
@@ -300,6 +422,11 @@ namespace ValheimChineseFont
                     if (AddAssetFallback(asset, _customSerif)) patched++;
                     if (_serifFallback != null) AddAssetFallback(asset, _serifFallback);
                 }
+
+                // 为其他字体（如 Norse）也添加通用回退
+                var preferredFallback = asset.name.Contains("Serif") ? _serifFallback : _sansFallback;
+                if (AddAssetFallback(asset, preferredFallback))
+                    patched++;
             }
             return patched;
         }
@@ -317,6 +444,57 @@ namespace ValheimChineseFont
                 asset.fallbackFontAssetTable = new List<TMP_FontAsset>();
             if (asset.fallbackFontAssetTable.Contains(fallback)) return false;
             asset.fallbackFontAssetTable.Insert(0, fallback);
+            return true;
+        }
+    }
+
+    [HarmonyPatch(typeof(Resources), nameof(Resources.FindObjectsOfTypeAll), new Type[] { typeof(Type) })]
+    internal static class ResourcesFindPatch
+    {
+        internal static Material SansOutlineTemplate;
+        internal static Material SerifOutlineTemplate;
+
+        static void Postfix(Type type, ref UnityEngine.Object[] __result)
+        {
+            if (type != typeof(TMP_FontAsset) || __result == null) return;
+
+            for (int i = 0; i < __result.Length; i++)
+            {
+                var font = __result[i] as TMP_FontAsset;
+                if (font == null) continue;
+
+                if (font.name.StartsWith("Valheim-AveriaSansLibre", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (SansOutlineTemplate == null && font.material != null)
+                        SansOutlineTemplate = font.material;
+                }
+                else if (font.name.StartsWith("Valheim-AveriaSerifLibre", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (SerifOutlineTemplate == null && font.material != null)
+                        SerifOutlineTemplate = font.material;
+                }
+
+                if (ChineseFontPlugin.FontReplacements.TryGetValue(font.name, out var replacement))
+                {
+                    __result[i] = replacement;
+                }
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(Resources), nameof(Resources.Load),
+          new Type[] { typeof(string), typeof(Type) })]
+    internal static class ResourcesLoadPatch
+    {
+        static bool Prefix(string path, Type systemTypeInstance, ref UnityEngine.Object __result)
+        {
+            if (systemTypeInstance != typeof(TMP_FontAsset)) return true;
+
+            if (ChineseFontPlugin.FontReplacements.TryGetValue(path, out var replacement))
+            {
+                __result = replacement;
+                return false;
+            }
             return true;
         }
     }
