@@ -21,10 +21,17 @@
       <HintPath>$(BepInExDir)\BepInEx.dll</HintPath>
       <Private>false</Private>
     </Reference>
+<<<<<<< Updated upstream
 	<Reference Include="0Harmony">
 		<HintPath>$(BepInExDir)\0Harmony.dll</HintPath>
 		<Private>false</Private>
 	</Reference>
+=======
+	    <Reference Include="BepInEx">
+      <HintPath>$(BepInExDir)\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+>>>>>>> Stashed changes
     <Reference Include="Unity.TextMeshPro">
       <HintPath>$(ManagedDir)\Unity.TextMeshPro.dll</HintPath>
       <Private>false</Private>
